@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pythonic Snake</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        #gameCanvas {
+            background-color: #1f2937; /* gray-800 */
+        }
+        .snake-segment {
+            box-sizing: border-box; 
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div id="game-container" class="bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-2xl">
+        <h1 class="text-3xl font-bold text-center mb-6 text-yellow-400">Pythonic Snake</h1>
+        
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4 text-center">
+            <div>
+                <p class="text-lg">🐍 Cobra Amarela (Você)</p>
+                <p class="text-sm">Comprimento: <span id="yellowLength" class="font-bold text-yellow-400 text-2xl">1</span></p>
+            </div>
+            <div>
+                <p class="text-lg">🐍 Cobra Azul (IA)</p>
+                <p class="text-sm">Comprimento: <span id="blueLength" class="font-bold text-blue-400 text-2xl">1</span></p>
+            </div>
+        </div>
+
+        <canvas id="gameCanvas" class="border-2 border-gray-600 rounded-md mx-auto block"></canvas>
+        
+        <div id="message-box" class="text-center mt-4 text-xl font-semibold h-8" ></div>
+        
+        <div class="flex flex-col sm:flex-row justify-center items-center mt-6 space-y-3 sm:space-y-0 sm:space-x-4">
+            <button id="startButton" class="w-full sm:w-auto bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg shadow-md transition duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-green-400">
+                Iniciar Jogo
+            </button>
+            <button id="restartButton" class="w-full sm:w-auto bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-lg shadow-md transition duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-400" style="display:none;">
+                Reiniciar Jogo
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // --- Elementos DOM ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const yellowLengthDisplay = document.getElementById('yellowLength');
+        const blueLengthDisplay = document.getElementById('blueLength');
+        const messageBox = document.getElementById('message-box');
+        const startButton = document.getElementById('startButton');
+        const restartButton = document.getElementById('restartButton');
+
+        // --- Constantes e Variáveis do Jogo ---
+        const cellSize = 20; 
+        let yellowSnake, blueSnake;
+        let food;
+        let gameInterval;
+        const gameSpeed = 150; 
+        let gameActive = false;
+        let gridWidth, gridHeight;
+
+        // --- Classe Cobra (Snake) ---
+        class Snake {
+            constructor(startX, startY, color, isPlayer = false, initialDx = cellSize, initialDy = 0) {
+                this.initialGridX = startX;
+                this.initialGridY = startY;
+                this.color = color;
+                this.headColor = isPlayer ? '#FFD700' : '#60A5FA'; 
+                this.isPlayer = isPlayer;
+                this.initialDx = initialDx; // Direção X inicial
+                this.initialDy = initialDy; // Direção Y inicial
+                this.resetToInitialState(); // Configura o estado inicial
+            }
+
+            resetToInitialState() {
+                this.x = this.initialGridX * cellSize;
+                this.y = this.initialGridY * cellSize;
+                this.body = [{ x: this.x, y: this.y }];
+                this.dx = this.initialDx; // Reseta para direção X inicial
+                this.dy = this.initialDy; // Reseta para direção Y inicial
+                this.pendingGrowthSegments = 0;
+                this.updateDisplayLength();
+                this.justCollided = false; 
+            }
+
+            move() {
+                if (this.justCollided || !gameActive) return;
+
+                const head = { x: this.body[0].x + this.dx, y: this.body[0].y + this.dy };
+                this.body.unshift(head); 
+                this.x = head.x; 
+                this.y = head.y;
+
+                if (food && food.isActive() && head.x === food.x && head.y === food.y) {
+                    this.grow();
+                    food.respawn(getAllSnakeSegments());
+                } else {
+                    if (this.pendingGrowthSegments > 0) {
+                        this.pendingGrowthSegments--;
+                    } else {
+                        this.body.pop(); 
+                    }
+                }
+                this.updateDisplayLength();
+            }
+
+            grow() {
+                const segmentsToGrow = Math.max(1, Math.floor(this.body.length * 0.05));
+                this.pendingGrowthSegments += segmentsToGrow;
+            }
+
+            draw() {
+                // Desenha o corpo
+                ctx.fillStyle = this.color;
+                for (let i = 1; i < this.body.length; i++) {
+                    ctx.fillRect(this.body[i].x, this.body[i].y, cellSize - 1, cellSize - 1);
+                }
+                // Desenha a cabeça
+                if (this.body.length > 0) {
+                    ctx.fillStyle = this.headColor;
+                    ctx.fillRect(this.body[0].x, this.body[0].y, cellSize - 1, cellSize - 1);
+                }
+            }
+
+            changeDirection(newDx, newDy) {
+                if (this.dx === -newDx && this.dx !== 0) return;
+                if (this.dy === -newDy && this.dy !== 0) return;
+                this.dx = newDx;
+                this.dy = newDy;
+            }
+
+            checkCollision(otherSnake) {
+                if (this.justCollided) return false; // Já colidiu e está em "invulnerabilidade"
+
+                const head = this.body[0];
+
+                // Colisão com a parede
+                if (head.x < 0 || head.x >= canvas.width || head.y < 0 || head.y >= canvas.height) {
+                    this.handleCollisionEffect();
+                    return true;
+                }
+
+                // Colisão consigo mesma
+                for (let i = 1; i < this.body.length; i++) {
+                    if (head.x === this.body[i].x && head.y === this.body[i].y) {
+                        this.handleCollisionEffect();
+                        return true;
+                    }
+                }
+
+                // Colisão com a outra cobra
+                if (otherSnake && otherSnake.body.length > 0) {
+                    // Cabeça com corpo da outra
+                    for (let i = 1; i < otherSnake.body.length; i++) { 
+                        if (head.x === otherSnake.body[i].x && head.y === otherSnake.body[i].y) {
+                            this.handleCollisionEffect();
+                            return true;
+                        }
+                    }
+                    // Cabeça com cabeça da outra
+                    if (head.x === otherSnake.body[0].x && head.y === otherSnake.body[0].y) {
+                         this.handleCollisionEffect();
+                         // A outra cobra também detectará essa colisão na sua própria chamada de checkCollision
+                         return true;
+                    }
+                }
+                return false;
+            }
+
+            handleCollisionEffect() {
+                if (this.justCollided) return;
+
+                this.justCollided = true; 
+                const snakeName = this.isPlayer ? 'Cobra Amarela' : 'Cobra Azul';
+                showMessage(`${snakeName} colidiu! Resetando...`, this.isPlayer ? 'text-yellow-300' : 'text-blue-300', 2000);
+                
+                this.resetToInitialState();
+
+                setTimeout(() => {
+                    this.justCollided = false;
+                }, gameSpeed * 3); // Tempo de "invulnerabilidade"
+            }
+            
+            updateDisplayLength() {
+                const displayId = this.isPlayer ? 'yellowLength' : 'blueLength';
+                document.getElementById(displayId).innerText = this.body.length;
+            }
+
+            aiMove(otherSnake, foodInstance) {
+                if (this.justCollided || !gameActive) return;
+
+                const head = this.body[0];
+                const possibleMoves = [
+                    { dx: 0, dy: -cellSize, name: 'up' },    
+                    { dx: 0, dy: cellSize, name: 'down' },   
+                    { dx: -cellSize, dy: 0, name: 'left' },  
+                    { dx: cellSize, dy: 0, name: 'right' }   
+                ];
+
+                let safeMoves = [];
+
+                for (const move of possibleMoves) {
+                    // Evitar inversão de 180 graus
+                    if (this.dx === -move.dx && this.dx !== 0) continue;
+                    if (this.dy === -move.dy && this.dy !== 0) continue;
+
+                    const nextX = head.x + move.dx;
+                    const nextY = head.y + move.dy;
+                    let isSafe = true;
+
+                    // 1. Checar colisão com paredes
+                    if (nextX < 0 || nextX >= canvas.width || nextY < 0 || nextY >= canvas.height) {
+                        isSafe = false;
+                    }
+
+                    // 2. Checar colisão com seu próprio corpo (previsão)
+                    if (isSafe && this.body.length > 0) {
+                        const segmentsToAvoid = this.pendingGrowthSegments > 0 ? this.body.length : this.body.length - 1;
+                        for (let i = 0; i < segmentsToAvoid; i++) {
+                            if (nextX === this.body[i].x && nextY === this.body[i].y) {
+                                isSafe = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    // 3. Checar colisão com a outra cobra (corpo e cabeça)
+                    if (isSafe && otherSnake && otherSnake.body.length > 0) {
+                        for (const segment of otherSnake.body) {
+                            if (nextX === segment.x && nextY === segment.y) {
+                                isSafe = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (isSafe) {
+                        safeMoves.push(move);
+                    }
+                }
+
+                let bestMove = null;
+
+                if (safeMoves.length > 0) {
+                    bestMove = safeMoves[Math.floor(Math.random() * safeMoves.length)]; // Padrão: aleatório seguro
+
+                    if (foodInstance && foodInstance.isActive()) {
+                        let movesTowardsFood = [];
+                        let minDistance = Infinity;
+
+                        for (const move of safeMoves) {
+                            const nextX = head.x + move.dx;
+                            const nextY = head.y + move.dy;
+                            const distanceToFood = Math.sqrt(Math.pow(nextX - foodInstance.x, 2) + Math.pow(nextY - foodInstance.y, 2)); // Distância Euclidiana
+
+                            if (distanceToFood < minDistance) {
+                                minDistance = distanceToFood;
+                                movesTowardsFood = [move]; 
+                            } else if (distanceToFood === minDistance) {
+                                movesTowardsFood.push(move); 
+                            }
+                        }
+
+                        if (movesTowardsFood.length > 0) {
+                            if (Math.random() < 0.75) { // 75% chance de ir para a comida
+                                bestMove = movesTowardsFood[Math.floor(Math.random() * movesTowardsFood.length)];
+                            }
+                        }
+                    }
+                    this.changeDirection(bestMove.dx, bestMove.dy);
+                } else {
+                    // Se não há movimentos seguros, a IA fará um movimento que resultará em colisão.
+                    // Tenta qualquer virada que não seja 180 graus.
+                    const validTurns = possibleMoves.filter(turn => {
+                        return !(this.dx === -turn.dx && this.dx !== 0) && !(this.dy === -turn.dy && this.dy !== 0);
+                    });
+                    if (validTurns.length > 0) {
+                        const randomTurn = validTurns[Math.floor(Math.random() * validTurns.length)];
+                        this.changeDirection(randomTurn.dx, randomTurn.dy);
+                    }
+                    // Se não houver validTurns, ela continuará na direção atual e colidirá.
+                }
+            }
+        }
+
+        // --- Classe Comida (Food) ---
+        class Food {
+            constructor() {
+                this.size = cellSize;
+                this.color = '#EF4444'; // red-500
+                this.lifespan = 5000; 
+                this.spawnTime = 0;
+                this.x = -cellSize; 
+                this.y = -cellSize;
+            }
+
+            draw() {
+                if (!this.isActive()) return;
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.size - 1, this.size - 1);
+            }
+
+            respawn(occupiedSegments = []) {
+                let newX, newY, onSnake;
+                const maxAttempts = (gridWidth * gridHeight) / 2; 
+                let attempts = 0;
+                do {
+                    newX = Math.floor(Math.random() * gridWidth) * cellSize;
+                    newY = Math.floor(Math.random() * gridHeight) * cellSize;
+                    onSnake = occupiedSegments.some(segment => segment.x === newX && segment.y === newY);
+                    attempts++;
+                } while (onSnake && attempts < maxAttempts);
+                
+                if (attempts >= maxAttempts && onSnake) { 
+                    this.x = -cellSize; 
+                    this.y = -cellSize;
+                    console.warn("Não foi possível encontrar local para a comida.");
+                } else {
+                    this.x = newX;
+                    this.y = newY;
+                }
+                this.spawnTime = Date.now();
+            }
+
+            isActive() {
+                return Date.now() - this.spawnTime < this.lifespan && this.x >=0;
+            }
+
+            update(allSegments) {
+                if (!this.isActive()) {
+                    this.respawn(allSegments);
+                }
+            }
+        }
+
+        // --- Funções de Lógica do Jogo ---
+        function initGame() {
+            // Ajusta o tamanho do canvas com base no container, mas mantém fixo durante o jogo
+            const containerWidth = document.getElementById('game-container').offsetWidth - 48; // padding do container
+            let newWidth = Math.floor(containerWidth / cellSize) * cellSize;
+            newWidth = Math.max(300, Math.min(newWidth, 600)); 
+            let newHeight = Math.floor(newWidth * (2/3) / cellSize) * cellSize; 
+            newHeight = Math.max(200, Math.min(newHeight, 400));
+            canvas.width = newWidth;
+            canvas.height = newHeight;
+            
+            gridWidth = canvas.width / cellSize;
+            gridHeight = canvas.height / cellSize;
+
+            const playerStartX = Math.floor(gridWidth * 0.25);
+            const playerStartY = Math.floor(gridHeight * 0.5);
+            const aiStartX = Math.floor(gridWidth * 0.75);
+            const aiStartY = Math.floor(gridHeight * 0.5);
+
+            yellowSnake = new Snake(playerStartX, playerStartY, '#FBBF24', true, cellSize, 0); 
+            blueSnake = new Snake(aiStartX, aiStartY, '#3B82F6', false, -cellSize, 0); 
+
+            food = new Food();
+            food.respawn(getAllSnakeSegments());
+            
+            yellowSnake.updateDisplayLength();
+            blueSnake.updateDisplayLength();
+            
+            document.addEventListener('keydown', handleKeyPress);
+            startButton.style.display = 'none';
+            restartButton.style.display = 'inline-block';
+            
+            showMessage("Jogo Iniciado!", "text-green-400", 2000);
+            gameActive = true;
+
+            if (gameInterval) clearInterval(gameInterval);
+            gameInterval = setInterval(gameLoop, gameSpeed);
+        }
+        
+        function getAllSnakeSegments() {
+            let segments = [];
+            if (yellowSnake && yellowSnake.body) segments = segments.concat(yellowSnake.body);
+            if (blueSnake && blueSnake.body) segments = segments.concat(blueSnake.body);
+            return segments;
+        }
+
+        function gameLoop() {
+            if (!gameActive) {
+                clearInterval(gameInterval);
+                return;
+            }
+
+            blueSnake.aiMove(yellowSnake, food);
+
+            if (!yellowSnake.justCollided) yellowSnake.move();
+            if (!blueSnake.justCollided) blueSnake.move();
+
+            food.update(getAllSnakeSegments());
+
+            ctx.fillStyle = '#111827'; 
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            food.draw();
+            yellowSnake.draw();
+            blueSnake.draw();
+
+            // Verifica colisões após o movimento
+            if (!yellowSnake.justCollided) {
+                 yellowSnake.checkCollision(blueSnake);
+            }
+            if (!blueSnake.justCollided) { // A IA também pode colidir se ficar presa
+                 blueSnake.checkCollision(yellowSnake);
+            }
+            
+            yellowSnake.updateDisplayLength();
+            blueSnake.updateDisplayLength();
+        }
+
+        function handleKeyPress(event) {
+            if (!gameActive || !yellowSnake || yellowSnake.justCollided) return;
+
+            const key = event.key;
+            switch (key) {
+                case 'ArrowUp':
+                    if (yellowSnake.dy === 0) yellowSnake.changeDirection(0, -cellSize); 
+                    break;
+                case 'ArrowDown':
+                    if (yellowSnake.dy === 0) yellowSnake.changeDirection(0, cellSize);
+                    break;
+                case 'ArrowLeft':
+                    if (yellowSnake.dx === 0) yellowSnake.changeDirection(-cellSize, 0); 
+                    break;
+                case 'ArrowRight':
+                    if (yellowSnake.dx === 0) yellowSnake.changeDirection(cellSize, 0);
+                    break;
+            }
+        }
+
+        function showMessage(text, colorClass = "text-white", duration = null) {
+            messageBox.textContent = text;
+            messageBox.className = `text-center mt-4 text-xl font-semibold h-8 ${colorClass}`; 
+            messageBox.style.display = 'block';
+            if (duration) {
+                setTimeout(() => {
+                    if (messageBox.textContent === text) { 
+                         hideMessage();
+                    }
+                }, duration);
+            }
+        }
+
+        function hideMessage() {
+            messageBox.textContent = '';
+            // messageBox.style.display = 'none'; // Mantém o espaço reservado
+        }
+        
+        function setupInitialScreen() {
+            const containerWidth = document.getElementById('game-container').offsetWidth - 48;
+            let newWidth = Math.floor(containerWidth / cellSize) * cellSize;
+            newWidth = Math.max(300, Math.min(newWidth, 600));
+            let newHeight = Math.floor(newWidth * (2/3) / cellSize) * cellSize;
+            newHeight = Math.max(200, Math.min(newHeight, 400));
+            canvas.width = newWidth;
+            canvas.height = newHeight;
+
+            ctx.fillStyle = '#111827'; 
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#FBBF24'; 
+            ctx.font = 'bold 24px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('🐍 Pythonic Snake 🐍', canvas.width / 2, canvas.height / 2 - 20);
+            ctx.font = '16px Inter, sans-serif';
+            ctx.fillStyle = '#9CA3AF'; 
+            ctx.fillText('Clique em "Iniciar Jogo" para começar!', canvas.width / 2, canvas.height / 2 + 20);
+
+            document.getElementById('yellowLength').innerText = '1';
+            document.getElementById('blueLength').innerText = '1';
+            hideMessage();
+            startButton.style.display = 'inline-block';
+            restartButton.style.display = 'none';
+        }
+
+        startButton.addEventListener('click', () => {
+            initGame();
+        });
+        restartButton.addEventListener('click', () => {
+            if (gameInterval) clearInterval(gameInterval);
+            gameActive = false; 
+            setTimeout(() => {
+                 initGame();
+            }, 50);
+        });
+        
+        window.onload = () => {
+            setupInitialScreen();
+            // O redimensionamento do canvas agora é feito em setupInitialScreen e initGame
+            // Não é necessário um listener de resize separado que redimensiona durante o jogo
+            // para manter a consistência da área de jogo.
+        };
+
+    </script>
+</body>
+</html>
